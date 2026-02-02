@@ -120,15 +120,13 @@ POST /predict
 ```json
 {
   "text": "I am so happy today!",
-  "labels": ["joy", "optimism"],
+  "labels": ["joy"],
   "scores": {
-    "joy": 0.85,
-    "optimism": 0.72,
-    "excitement": 0.45
+    "joy": 0.537
   },
-  "threshold": 0.35,
-  "model_type": "tfidf",
-  "inference_time_ms": 12.5
+  "threshold": 0.1,
+  "model_type": "roberta",
+  "inference_time_ms": 13.1
 }
 ```
 
@@ -188,22 +186,42 @@ goemotions-classifier/
 
 ## Model Performance
 
-### Baseline (TF-IDF + Logistic Regression)
+### Model Comparison
 
-| Metric | Score |
-|--------|-------|
-| Macro F1 | ~0.42 |
-| Micro F1 | ~0.50 |
-| Hamming Loss | ~0.05 |
+| Model | Micro F1 | Macro F1 | Hamming Loss | Training Time |
+|-------|----------|----------|--------------|---------------|
+| **TF-IDF Baseline** | 0.449 | 0.400 | 0.066 | ~2 min (CPU) |
+| **RoBERTa-base** | 0.443 | **0.446** | **0.039** | ~35 min (MPS) |
+| DeBERTa-v3-large* | ~0.50 | ~0.52 | ~0.035 | ~2h (CUDA) |
 
-### Neural Models (RoBERTa/DeBERTa)
+*\*DeBERTa requires CUDA GPU with 16GB+ VRAM*
 
-| Model | Macro F1 | Micro F1 |
-|-------|----------|----------|
-| RoBERTa-base | ~0.48 | ~0.55 |
-| DeBERTa-v3-large | ~0.52 | ~0.58 |
+### Key Findings
 
-*Note: Actual results may vary based on training configuration and hardware.*
+- **TF-IDF** achieves competitive Micro F1 with minimal compute resources
+- **RoBERTa** significantly outperforms TF-IDF on Macro F1 (+11%) and Hamming Loss (-40%)
+- Higher Macro F1 indicates better handling of class imbalance
+- Lower Hamming Loss indicates fewer incorrect predictions overall
+
+### Per-Class F1 Scores (RoBERTa)
+
+**Best performing emotions:**
+| Emotion | F1 Score |
+|---------|----------|
+| gratitude | 0.909 |
+| amusement | 0.790 |
+| love | 0.781 |
+| remorse | 0.722 |
+| admiration | 0.675 |
+
+**Challenging emotions (class imbalance):**
+| Emotion | F1 Score |
+|---------|----------|
+| neutral | 0.002 |
+| approval | 0.059 |
+| annoyance | 0.105 |
+
+*Note: Low scores for `neutral`, `approval`, `annoyance` are typical for GoEmotions due to label ambiguity and class overlap.*
 
 ## Configuration
 
@@ -250,6 +268,86 @@ The [GoEmotions](https://arxiv.org/abs/2005.00547) dataset contains ~58,000 Redd
 - **Test**: ~5,400 samples
 
 The dataset is automatically downloaded from HuggingFace on first use.
+
+## Screenshots
+
+### 📊 Exploratory Data Analysis
+
+<table>
+<tr>
+<td width="50%">
+<strong>Missing Values Analysis</strong><br>
+<img src="screenshots/eda_missing_values.png" alt="Missing Values">
+</td>
+<td width="50%">
+<strong>Class Distribution</strong><br>
+<img src="screenshots/eda_class_distribution.png" alt="Class Distribution">
+</td>
+</tr>
+<tr>
+<td width="50%">
+<strong>Labels per Sample</strong><br>
+<img src="screenshots/eda_labels_per_sample.png" alt="Labels per Sample">
+</td>
+<td width="50%">
+<strong>Text Length Distribution</strong><br>
+<img src="screenshots/eda_text_length.png" alt="Text Length">
+</td>
+</tr>
+</table>
+
+**Word Clouds by Emotion:**
+
+![Word Clouds](screenshots/eda_wordclouds.png)
+
+**Label Co-occurrence Matrix:**
+
+![Co-occurrence](screenshots/eda_cooccurrence.png)
+
+### 🎯 Model Training & Optimization
+
+<table>
+<tr>
+<td width="50%">
+<strong>TF-IDF Threshold Optimization</strong><br>
+<img src="screenshots/tfidf_threshold_optimization.png" alt="Threshold Optimization">
+</td>
+<td width="50%">
+<strong>Feature Importance (Top Words)</strong><br>
+<img src="screenshots/feature_importance.png" alt="Feature Importance">
+</td>
+</tr>
+</table>
+
+### 📈 Model Comparison
+
+<table>
+<tr>
+<td width="50%">
+<strong>Model Metrics Comparison</strong><br>
+<img src="screenshots/model_comparison.png" alt="Model Comparison">
+</td>
+<td width="50%">
+<strong>Per-Class F1 Scores</strong><br>
+<img src="screenshots/perclass_f1_comparison.png" alt="Per-Class F1">
+</td>
+</tr>
+</table>
+
+### 🚀 API Documentation
+
+<table>
+<tr>
+<td width="50%">
+<strong>Swagger UI</strong><br>
+<img src="screenshots/api_swagger.png" alt="Swagger UI">
+</td>
+<td width="50%">
+<strong>Predict Endpoint</strong><br>
+<img src="screenshots/api_predict_endpoint.png" alt="Predict Endpoint">
+</td>
+</tr>
+</table>
 
 ## License
 

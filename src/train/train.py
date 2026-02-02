@@ -419,7 +419,8 @@ def train_neural_model(
         logging_dir=str(model_dir / "logs"),
         logging_steps=100,
         seed=SEED,
-        fp16=torch.cuda.is_available(),
+        fp16=False,
+        bf16=torch.cuda.is_available(),
     )
 
     # Custom trainer with weighted loss
