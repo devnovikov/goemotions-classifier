@@ -425,6 +425,13 @@ def train_neural_model(
     # Custom trainer with weighted loss
     class WeightedTrainer(Trainer):
         def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            """Compute a class-balanced multi-label loss using BCEWithLogitsLoss.
+
+            This overrides the default Trainer.compute_loss to apply class-balanced
+            weighting via torch.nn.BCEWithLogitsLoss, using the precomputed
+            class_weights_tensor as the pos_weight argument. This implements
+            class-balanced loss for the multi-label emotion classification task.
+            """
             labels = inputs.pop("labels")
             outputs = model(**inputs)
             logits = outputs.logits
