@@ -1,0 +1,70 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Notebooks (not needed for API)
+notebooks/
+*.ipynb
+
+# Dataset (download at runtime if needed)
+dataset/
+
+# Screenshots
+screenshots/
+
+# Specs
+specs/
+.specify/
+
+# Development files
+.env
+.env.local
+*.log
+Makefile
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.docker/
+
+# Large model files that should be copied separately
+# models/roberta/
+# models/deberta/
+
+# Keep TF-IDF baseline (small)
+# !models/tfidf_baseline/
+
+# OS
+.DS_Store
+Thumbs.db
