@@ -300,6 +300,38 @@ def print_metrics(metrics: dict) -> None:
         print(f"  {label:15s}: {score:.4f}")
 
 
+class WeightedBCETrainer:
+    """Custom Trainer that uses weighted BCEWithLogitsLoss for class imbalance."""
+
+    def __init__(self, class_weights: Optional[torch.Tensor] = None):
+        self.class_weights = class_weights
+
+    def get_trainer_class(self):
+        """Returns a Trainer subclass with weighted loss."""
+        from transformers import Trainer
+
+        class_weights = self.class_weights
+
+        class _WeightedTrainer(Trainer):
+            def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+                labels = inputs.pop("labels")
+                outputs = model(**inputs)
+                logits = outputs.logits
+
+                # Weighted BCE loss
+                if class_weights is not None:
+                    weights = class_weights.to(logits.device)
+                    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
+                else:
+                    loss_fn = torch.nn.BCEWithLogitsLoss()
+
+                loss = loss_fn(logits, labels)
+
+                return (loss, outputs) if return_outputs else loss
+
+        return _WeightedTrainer
+
+
 def train_neural_model(
     model_type: str,
     train_dataset,
@@ -582,8 +614,15 @@ def train_neural_model(
             "hamming_loss": hamming_loss(labels, preds),
         }
 
-    # Simple trainer - no custom modifications
-    trainer = Trainer(
+    # Create trainer with weighted loss for class imbalance
+    if class_weights_tensor is not None:
+        weighted_trainer = WeightedBCETrainer(class_weights=class_weights_tensor)
+        TrainerClass = weighted_trainer.get_trainer_class()
+        print("  Using WeightedBCETrainer with pos_weight for class imbalance")
+    else:
+        TrainerClass = Trainer
+
+    trainer = TrainerClass(
         model=model,
         args=training_args,
         train_dataset=train_ds,
