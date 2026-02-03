@@ -412,68 +412,15 @@ def train_neural_model(
     train_ds = EmotionDataset(train_tokenized, train_labels)
     val_ds = EmotionDataset(val_tokenized, val_labels)
 
-    # Load model
+    # Load model - simple approach, let transformers handle everything
     print(f"Loading model from {model_name}...")
-
-    # DeBERTa-v3 has gamma/beta naming for LayerNorm instead of weight/bias
-    # We need to handle this explicitly with manual remapping
-    if "deberta-v3" in model_name.lower():
-        from transformers import DebertaV2ForSequenceClassification, DebertaV2Config
-        from huggingface_hub import hf_hub_download
-        import warnings
-
-        # Load config
-        config = DebertaV2Config.from_pretrained(
-            model_name,
-            num_labels=NUM_LABELS,
-            problem_type="multi_label_classification",
-            id2label=ID2LABEL,
-            label2id=LABEL2ID,
-        )
-
-        # Try to find the weights file (safetensors or pytorch_model.bin)
-        try:
-            weights_file = hf_hub_download(repo_id=model_name, filename="model.safetensors")
-            import safetensors.torch
-            state_dict = safetensors.torch.load_file(weights_file)
-        except Exception:
-            # Fallback to pytorch format
-            weights_file = hf_hub_download(repo_id=model_name, filename="pytorch_model.bin")
-            state_dict = torch.load(weights_file, map_location="cpu", weights_only=True)
-
-        # Check if remapping is needed (some models use gamma/beta, others use weight/bias)
-        sample_keys = list(state_dict.keys())[:10]
-        needs_remapping = any(".gamma" in k or ".beta" in k for k in state_dict.keys())
-
-        if needs_remapping:
-            print("  Remapping LayerNorm: gamma->weight, beta->bias")
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                new_key = key
-                if ".gamma" in key:
-                    new_key = key.replace(".gamma", ".weight")
-                elif ".beta" in key:
-                    new_key = key.replace(".beta", ".bias")
-                new_state_dict[new_key] = value
-        else:
-            print("  LayerNorm already uses weight/bias naming")
-            new_state_dict = state_dict
-
-        # Create model and load remapped weights
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
-            model = DebertaV2ForSequenceClassification(config)
-            missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
-            # Expected: classifier.weight, classifier.bias, pooler (4 keys)
-            print(f"  Loaded weights (missing {len(missing)} classifier keys, {len(unexpected)} unexpected)")
-    else:
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_name,
-            num_labels=NUM_LABELS,
-            problem_type="multi_label_classification",
-            id2label=ID2LABEL,
-            label2id=LABEL2ID,
-        )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=NUM_LABELS,
+        problem_type="multi_label_classification",
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+    )
 
     # Verify model loaded correctly
     param_count = sum(p.numel() for p in model.parameters())
@@ -492,24 +439,6 @@ def train_neural_model(
             print("  OK: LayerNorm weights look correct (pretrained).")
 
     model.to(device)
-
-    # Initialize classifier bias with class priors
-    # This gives the model a proper starting point based on class frequencies
-    if hasattr(model, 'classifier') and hasattr(model.classifier, 'bias'):
-        with torch.no_grad():
-            label_matrix = create_label_matrix(train_dataset)
-            pos_rates = label_matrix.mean(axis=0)
-            # Clip to avoid log(0) or log(inf)
-            pos_rates = np.clip(pos_rates, 0.001, 0.999)
-            # bias = log(p / (1-p)) gives sigmoid(bias) = p
-            prior_bias = np.log(pos_rates / (1 - pos_rates))
-            model.classifier.bias.copy_(torch.tensor(prior_bias, dtype=torch.float32))
-            print(f"  Initialized classifier bias with class priors")
-            print(f"  Bias range: [{prior_bias.min():.2f}, {prior_bias.max():.2f}]")
-
-    # Save initial classifier weights for debugging
-    initial_classifier_weight = model.classifier.weight.clone().detach()
-    initial_classifier_bias = model.classifier.bias.clone().detach()
 
     # Calculate class weights (will be moved to correct device in compute_loss)
     class_weights_tensor = None
@@ -563,95 +492,6 @@ def train_neural_model(
         gradient_checkpointing=False,  # Disabled - was preventing learning
     )
 
-    # Callback to freeze/unfreeze encoder during training
-    from transformers import TrainerCallback
-
-    class FreezeEncoderCallback(TrainerCallback):
-        """Freeze encoder for first epoch, then unfreeze."""
-        def __init__(self, model, freeze_epochs=1):
-            self.model = model
-            self.freeze_epochs = freeze_epochs
-            self.is_frozen = False
-
-        def on_train_begin(self, args, state, control, **kwargs):
-            """Freeze encoder at start of training."""
-            self._freeze_encoder()
-            print(f"  Encoder FROZEN for first {self.freeze_epochs} epoch(s)")
-
-        def on_epoch_end(self, args, state, control, **kwargs):
-            """Unfreeze encoder after freeze_epochs."""
-            if state.epoch >= self.freeze_epochs and self.is_frozen:
-                self._unfreeze_encoder()
-                print(f"\n  Encoder UNFROZEN at epoch {state.epoch}")
-
-        def _freeze_encoder(self):
-            for name, param in self.model.named_parameters():
-                if 'classifier' not in name and 'pooler' not in name:
-                    param.requires_grad = False
-            self.is_frozen = True
-
-        def _unfreeze_encoder(self):
-            for name, param in self.model.named_parameters():
-                param.requires_grad = True
-            self.is_frozen = False
-
-    # Custom trainer with differential learning rate and optional weighted loss
-    class DifferentialLRTrainer(Trainer):
-        def __init__(self, class_weights_tensor=None, classifier_lr=1e-3, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.class_weights_tensor = class_weights_tensor
-            self.classifier_lr = classifier_lr
-
-        def create_optimizer(self):
-            """Create optimizer with different learning rates for encoder and classifier."""
-            from torch.optim import AdamW
-
-            model = self.model
-            base_lr = self.args.learning_rate
-            classifier_lr = self.classifier_lr
-
-            # Separate parameters: classifier vs encoder
-            classifier_params = []
-            encoder_params = []
-
-            for name, param in model.named_parameters():
-                if not param.requires_grad:
-                    continue
-                if 'classifier' in name or 'pooler' in name:
-                    classifier_params.append(param)
-                else:
-                    encoder_params.append(param)
-
-            optimizer_grouped_parameters = [
-                {"params": encoder_params, "lr": base_lr},
-                {"params": classifier_params, "lr": classifier_lr},
-            ]
-
-            self.optimizer = AdamW(
-                optimizer_grouped_parameters,
-                betas=(0.9, 0.999),
-                eps=1e-8,
-                weight_decay=self.args.weight_decay,
-            )
-
-            print(f"  Differential LR: encoder={base_lr}, classifier={classifier_lr}")
-            return self.optimizer
-
-        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-            """Compute loss, optionally with class weights."""
-            labels = inputs.pop("labels")
-            outputs = model(**inputs)
-            logits = outputs.logits
-
-            if self.class_weights_tensor is not None:
-                weights = self.class_weights_tensor.to(logits.device)
-                loss_fct = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
-            else:
-                loss_fct = torch.nn.BCEWithLogitsLoss()
-
-            loss = loss_fct(logits, labels)
-            return (loss, outputs) if return_outputs else loss
-
     def compute_metrics(eval_pred):
         logits, labels = eval_pred
         probs = torch.sigmoid(torch.tensor(logits)).numpy()
@@ -662,11 +502,8 @@ def train_neural_model(
             "hamming_loss": hamming_loss(labels, preds),
         }
 
-    # Initialize trainer with differential learning rate
-    # Classifier gets higher lr (1e-3) than encoder (from config)
-    trainer = DifferentialLRTrainer(
-        class_weights_tensor=class_weights_tensor if use_class_weights else None,
-        classifier_lr=1e-3,  # 10x higher than encoder lr
+    # Simple trainer - no custom modifications
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -679,18 +516,6 @@ def train_neural_model(
     start_time = time.time()
     trainer.train()
     training_time = time.time() - start_time
-
-    # Check if weights changed
-    final_classifier_weight = model.classifier.weight.clone().detach().cpu()
-    final_classifier_bias = model.classifier.bias.clone().detach().cpu()
-    weight_diff = (final_classifier_weight - initial_classifier_weight.cpu()).abs().mean().item()
-    bias_diff = (final_classifier_bias - initial_classifier_bias.cpu()).abs().mean().item()
-    print(f"\n  Classifier weight change: {weight_diff:.6f}")
-    print(f"  Classifier bias change: {bias_diff:.6f}")
-    if weight_diff < 1e-6 and bias_diff < 1e-6:
-        print("  WARNING: Classifier weights did NOT change! Model is not learning.")
-    else:
-        print("  OK: Classifier weights changed during training.")
 
     # Evaluate
     print("\nEvaluating...")

@@ -60,12 +60,12 @@ MODEL_CONFIGS = {
         "name": "DeBERTa-v3-base",
         "model_name": "microsoft/deberta-v3-base",
         "max_length": 256,
-        "batch_size": 16,  # can use larger batch with smaller model
+        "batch_size": 8,  # same as reference model
         "gradient_accumulation_steps": 1,
-        "learning_rate": 2e-5,  # standard for base models
+        "learning_rate": 2e-5,  # same as reference model
         "epochs": 5,
-        "warmup_ratio": 0.06,
-        "lr_scheduler_type": "cosine",
+        "warmup_ratio": 0.0,  # reference model uses no warmup
+        "lr_scheduler_type": "linear",  # same as reference model
     },
 }
 
