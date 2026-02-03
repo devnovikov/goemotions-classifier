@@ -415,51 +415,8 @@ def train_neural_model(
     # Load model
     print(f"Loading model from {model_name}...")
 
-    # DeBERTa-v3 has gamma/beta naming for LayerNorm instead of weight/bias
-    # We need to handle this explicitly
-    if "deberta-v3" in model_name.lower():
-        from transformers import DebertaV2ForSequenceClassification, DebertaV2Config
-        from transformers.modeling_utils import load_state_dict
-        from huggingface_hub import hf_hub_download
-        import warnings
-
-        # Load config
-        config = DebertaV2Config.from_pretrained(
-            model_name,
-            num_labels=NUM_LABELS,
-            problem_type="multi_label_classification",
-            id2label=ID2LABEL,
-            label2id=LABEL2ID,
-        )
-
-        # Try to find the weights file (safetensors or pytorch_model.bin)
-        try:
-            weights_file = hf_hub_download(repo_id=model_name, filename="model.safetensors")
-            import safetensors.torch
-            state_dict = safetensors.torch.load_file(weights_file)
-        except Exception:
-            # Fallback to pytorch format
-            weights_file = hf_hub_download(repo_id=model_name, filename="pytorch_model.bin")
-            state_dict = torch.load(weights_file, map_location="cpu", weights_only=True)
-
-        # Remap LayerNorm parameter names: gamma->weight, beta->bias
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            new_key = key
-            if ".gamma" in key:
-                new_key = key.replace(".gamma", ".weight")
-            elif ".beta" in key:
-                new_key = key.replace(".beta", ".bias")
-            new_state_dict[new_key] = value
-
-        # Create model and load remapped weights
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
-            model = DebertaV2ForSequenceClassification(config)
-            missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
-            # Expected: classifier.weight, classifier.bias, pooler (4 keys)
-            print(f"  Loaded weights (missing {len(missing)} classifier keys, {len(unexpected)} unexpected)")
-    else:
+    # Use standard AutoModelForSequenceClassification for all models
+    # Transformers library handles LayerNorm naming (gamma/beta vs weight/bias) automatically
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name,
             num_labels=NUM_LABELS,
@@ -499,6 +456,10 @@ def train_neural_model(
             model.classifier.bias.copy_(torch.tensor(prior_bias, dtype=torch.float32))
             print(f"  Initialized classifier bias with class priors")
             print(f"  Bias range: [{prior_bias.min():.2f}, {prior_bias.max():.2f}]")
+
+    # Save initial classifier weights for debugging
+    initial_classifier_weight = model.classifier.weight.clone().detach()
+    initial_classifier_bias = model.classifier.bias.clone().detach()
 
     # Calculate class weights (will be moved to correct device in compute_loss)
     class_weights_tensor = None
@@ -603,6 +564,18 @@ def train_neural_model(
     start_time = time.time()
     trainer.train()
     training_time = time.time() - start_time
+
+    # Check if weights changed
+    final_classifier_weight = model.classifier.weight.clone().detach().cpu()
+    final_classifier_bias = model.classifier.bias.clone().detach().cpu()
+    weight_diff = (final_classifier_weight - initial_classifier_weight.cpu()).abs().mean().item()
+    bias_diff = (final_classifier_bias - initial_classifier_bias.cpu()).abs().mean().item()
+    print(f"\n  Classifier weight change: {weight_diff:.6f}")
+    print(f"  Classifier bias change: {bias_diff:.6f}")
+    if weight_diff < 1e-6 and bias_diff < 1e-6:
+        print("  WARNING: Classifier weights did NOT change! Model is not learning.")
+    else:
+        print("  OK: Classifier weights changed during training.")
 
     # Evaluate
     print("\nEvaluating...")
