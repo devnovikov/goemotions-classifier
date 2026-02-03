@@ -412,15 +412,91 @@ def train_neural_model(
     train_ds = EmotionDataset(train_tokenized, train_labels)
     val_ds = EmotionDataset(val_tokenized, val_labels)
 
-    # Load model - simple approach, let transformers handle everything
+    # Load model with special handling for DeBERTa-v3 weight naming
     print(f"Loading model from {model_name}...")
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name,
-        num_labels=NUM_LABELS,
-        problem_type="multi_label_classification",
-        id2label=ID2LABEL,
-        label2id=LABEL2ID,
-    )
+
+    if model_type == "deberta":
+        # DeBERTa-v3 checkpoints may use legacy naming (LayerNorm.gamma/beta)
+        # while transformers expects modern naming (LayerNorm.weight/bias).
+        # We handle both cases with automatic remapping.
+        from transformers import AutoConfig, DebertaV2ForSequenceClassification
+        from huggingface_hub import hf_hub_download
+
+        # Load config
+        config = AutoConfig.from_pretrained(
+            model_name,
+            num_labels=NUM_LABELS,
+            problem_type="multi_label_classification",
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
+
+        # Create model with config (random weights initially)
+        model = DebertaV2ForSequenceClassification(config)
+
+        # Download and load pretrained weights
+        print("  Downloading pretrained weights...")
+        try:
+            # Try safetensors first (faster, safer)
+            import safetensors.torch
+            checkpoint_path = hf_hub_download(model_name, "model.safetensors")
+            state_dict = safetensors.torch.load_file(checkpoint_path)
+        except Exception:
+            # Fallback to pytorch_model.bin
+            checkpoint_path = hf_hub_download(model_name, "pytorch_model.bin")
+            state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+
+        # Check if remapping is needed (gamma/beta -> weight/bias)
+        needs_remap = any("LayerNorm.gamma" in k or "LayerNorm.beta" in k for k in state_dict.keys())
+
+        if needs_remap:
+            print("  Remapping LayerNorm keys (gamma->weight, beta->bias)...")
+            remapped_state_dict = {}
+            remapped_count = 0
+            for key, value in state_dict.items():
+                new_key = key
+                if "LayerNorm.gamma" in key:
+                    new_key = key.replace("LayerNorm.gamma", "LayerNorm.weight")
+                    remapped_count += 1
+                elif "LayerNorm.beta" in key:
+                    new_key = key.replace("LayerNorm.beta", "LayerNorm.bias")
+                    remapped_count += 1
+                # Skip MLM head weights (not needed for classification)
+                if any(x in new_key for x in ["mask_predictions", "lm_predictions", "cls."]):
+                    continue
+                remapped_state_dict[new_key] = value
+            print(f"  Remapped {remapped_count} LayerNorm keys")
+            state_dict = remapped_state_dict
+        else:
+            # Filter out MLM head weights even if no remapping needed
+            state_dict = {
+                k: v for k, v in state_dict.items()
+                if not any(x in k for x in ["mask_predictions", "lm_predictions", "cls."])
+            }
+
+        # Load weights
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        print(f"  Missing keys: {len(missing)} (expected: classifier, pooler)")
+        print(f"  Unexpected keys: {len(unexpected)}")
+
+        # Validate that only expected keys are missing (classifier head)
+        expected_missing = {"classifier.weight", "classifier.bias", "pooler.dense.weight", "pooler.dense.bias"}
+        actual_missing = set(missing)
+        critical_missing = actual_missing - expected_missing
+        if critical_missing:
+            print(f"  ERROR: Critical pretrained weights missing!")
+            for key in list(critical_missing)[:10]:
+                print(f"    - {key}")
+            raise RuntimeError(f"Failed to load {len(critical_missing)} critical pretrained weights")
+    else:
+        # For RoBERTa and other models, use standard loading
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=NUM_LABELS,
+            problem_type="multi_label_classification",
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
 
     # Verify model loaded correctly
     param_count = sum(p.numel() for p in model.parameters())
@@ -429,14 +505,18 @@ def train_neural_model(
     print(f"  Trainable parameters: {trainable_count:,}")
 
     # Diagnostic: check LayerNorm weights are properly loaded (not random)
+    # Note: Pretrained DeBERTa-v3-base has LayerNorm.weight with mean≈0.6, not 1.0
+    # Random init would have mean=1.0 and std=0.0 (constant initialization)
     if hasattr(model, "deberta"):
         ln = model.deberta.embeddings.LayerNorm
         ln_mean, ln_std = ln.weight.mean().item(), ln.weight.std().item()
         print(f"  LayerNorm check: mean={ln_mean:.4f}, std={ln_std:.4f}")
-        if abs(ln_mean - 1.0) > 0.1 or ln_std > 0.5:
-            print("  WARNING: LayerNorm weights look random! Pretrained weights may not have loaded.")
+        # Pretrained weights have non-zero std (learned variation across dimensions)
+        # Random init has std=0 (all ones) or very small std
+        if ln_std < 0.01:
+            print("  WARNING: LayerNorm weights look random (std≈0)! Pretrained weights may not have loaded.")
         else:
-            print("  OK: LayerNorm weights look correct (pretrained).")
+            print("  OK: LayerNorm weights loaded (pretrained has std>0).")
 
     model.to(device)
 
