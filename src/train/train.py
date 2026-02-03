@@ -555,6 +555,38 @@ def train_neural_model(
         gradient_checkpointing=False,  # Disabled - was preventing learning
     )
 
+    # Callback to freeze/unfreeze encoder during training
+    from transformers import TrainerCallback
+
+    class FreezeEncoderCallback(TrainerCallback):
+        """Freeze encoder for first epoch, then unfreeze."""
+        def __init__(self, model, freeze_epochs=1):
+            self.model = model
+            self.freeze_epochs = freeze_epochs
+            self.is_frozen = False
+
+        def on_train_begin(self, args, state, control, **kwargs):
+            """Freeze encoder at start of training."""
+            self._freeze_encoder()
+            print(f"  Encoder FROZEN for first {self.freeze_epochs} epoch(s)")
+
+        def on_epoch_end(self, args, state, control, **kwargs):
+            """Unfreeze encoder after freeze_epochs."""
+            if state.epoch >= self.freeze_epochs and self.is_frozen:
+                self._unfreeze_encoder()
+                print(f"\n  Encoder UNFROZEN at epoch {state.epoch}")
+
+        def _freeze_encoder(self):
+            for name, param in self.model.named_parameters():
+                if 'classifier' not in name and 'pooler' not in name:
+                    param.requires_grad = False
+            self.is_frozen = True
+
+        def _unfreeze_encoder(self):
+            for name, param in self.model.named_parameters():
+                param.requires_grad = True
+            self.is_frozen = False
+
     # Custom trainer with differential learning rate and optional weighted loss
     class DifferentialLRTrainer(Trainer):
         def __init__(self, class_weights_tensor=None, classifier_lr=1e-3, *args, **kwargs):
@@ -624,14 +656,17 @@ def train_neural_model(
 
     # Initialize trainer with differential learning rate
     # Classifier gets higher lr (1e-3) than encoder (from config)
+    freeze_callback = FreezeEncoderCallback(model, freeze_epochs=1)
+
     trainer = DifferentialLRTrainer(
         class_weights_tensor=class_weights_tensor if use_class_weights else None,
-        classifier_lr=1e-3,  # 50x higher than encoder lr
+        classifier_lr=1e-3,  # 10x higher than encoder lr
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         compute_metrics=compute_metrics,
+        callbacks=[freeze_callback],
     )
 
     # Train
