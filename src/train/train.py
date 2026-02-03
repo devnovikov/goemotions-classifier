@@ -664,8 +664,6 @@ def train_neural_model(
 
     # Initialize trainer with differential learning rate
     # Classifier gets higher lr (1e-3) than encoder (from config)
-    freeze_callback = FreezeEncoderCallback(model, freeze_epochs=1)
-
     trainer = DifferentialLRTrainer(
         class_weights_tensor=class_weights_tensor if use_class_weights else None,
         classifier_lr=1e-3,  # 10x higher than encoder lr
@@ -674,7 +672,6 @@ def train_neural_model(
         train_dataset=train_ds,
         eval_dataset=val_ds,
         compute_metrics=compute_metrics,
-        callbacks=[freeze_callback],
     )
 
     # Train
