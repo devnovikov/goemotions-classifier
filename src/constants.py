@@ -59,15 +59,17 @@ MODEL_CONFIGS = {
     "deberta": {
         "name": "DeBERTa-v3-large",
         "model_name": "microsoft/deberta-v3-large",
-        "max_length": 128,
-        "batch_size": 8,
-        "learning_rate": 5e-6,  # Lower LR for stability with large model
+        "max_length": 256,  # Increased from 128 for better context
+        "batch_size": 4,  # Smaller batch, use gradient accumulation
+        "gradient_accumulation_steps": 4,  # Effective batch = 16
+        "learning_rate": 3e-5,  # Recommended for DeBERTa fine-tuning
         "epochs": 3,
+        "warmup_ratio": 0.15,  # More warmup for stability
     },
 }
 
-# Default classification threshold
-DEFAULT_THRESHOLD = 0.35
+# Default classification threshold (0.2 recommended for GoEmotions)
+DEFAULT_THRESHOLD = 0.2
 
 # Dataset configuration
 DATASET_NAME = "google-research-datasets/go_emotions"

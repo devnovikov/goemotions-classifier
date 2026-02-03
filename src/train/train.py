@@ -81,6 +81,17 @@ def parse_args():
         action="store_true",
         help="Quick sanity check with 1000 train samples, 200 val samples",
     )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit training samples (useful for slower hardware)",
+    )
+    parser.add_argument(
+        "--no-class-weights",
+        action="store_true",
+        help="Disable class weights (use standard BCE loss)",
+    )
     return parser.parse_args()
 
 
@@ -218,7 +229,8 @@ def optimize_threshold(
         Tuple of (best_threshold, best_f1_score)
     """
     if thresholds is None:
-        thresholds = np.arange(0.1, 0.6, 0.05)
+        # Search around 0.2 (recommended for GoEmotions) with wider range
+        thresholds = np.arange(0.05, 0.5, 0.025)
 
     best_threshold = DEFAULT_THRESHOLD
     best_f1 = 0.0
@@ -297,6 +309,7 @@ def train_neural_model(
     batch_size: Optional[int] = None,
     learning_rate: Optional[float] = None,
     device: Optional[torch.device] = None,
+    use_class_weights: bool = True,
 ) -> dict:
     """
     Train a neural network model (RoBERTa or DeBERTa).
@@ -310,6 +323,7 @@ def train_neural_model(
         batch_size: Batch size
         learning_rate: Learning rate
         device: Torch device
+        use_class_weights: Whether to use class-balanced loss weights
 
     Returns:
         Dictionary with training results and metrics
@@ -334,12 +348,16 @@ def train_neural_model(
     batch_size = batch_size or config["batch_size"]
     learning_rate = learning_rate or config["learning_rate"]
     max_length = config["max_length"]
+    gradient_accumulation_steps = config.get("gradient_accumulation_steps", 1)
+    warmup_ratio = config.get("warmup_ratio", 0.1)
 
+    effective_batch = batch_size * gradient_accumulation_steps
     print(f"\nModel: {model_name}")
     print(f"Epochs: {epochs}")
-    print(f"Batch size: {batch_size}")
+    print(f"Batch size: {batch_size} (effective: {effective_batch} with {gradient_accumulation_steps}x accumulation)")
     print(f"Learning rate: {learning_rate}")
     print(f"Max length: {max_length}")
+    print(f"Warmup ratio: {warmup_ratio}")
 
     # Setup device
     if device is None:
@@ -455,57 +473,83 @@ def train_neural_model(
     print(f"  Total parameters: {param_count:,}")
     print(f"  Trainable parameters: {trainable_count:,}")
 
+    # Diagnostic: check LayerNorm weights are properly loaded (not random)
+    if hasattr(model, "deberta"):
+        ln = model.deberta.embeddings.LayerNorm
+        ln_mean, ln_std = ln.weight.mean().item(), ln.weight.std().item()
+        print(f"  LayerNorm check: mean={ln_mean:.4f}, std={ln_std:.4f}")
+        if abs(ln_mean - 1.0) > 0.1 or ln_std > 0.5:
+            print("  WARNING: LayerNorm weights look random! Pretrained weights may not have loaded.")
+        else:
+            print("  OK: LayerNorm weights look correct (pretrained).")
+
     model.to(device)
 
-    # Calculate class weights
-    class_weights = compute_class_weights(train_dataset)
-    class_weights_tensor = torch.tensor(class_weights, device=device)
+    # Calculate class weights (will be moved to correct device in compute_loss)
+    class_weights_tensor = None
+    if use_class_weights:
+        class_weights = compute_class_weights(train_dataset)
+        class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32)
+        print(f"  Using class weights (max={class_weights.max():.2f}, min={class_weights.min():.2f})")
+    else:
+        print("  Class weights DISABLED - using standard BCE loss")
 
     # Training arguments
-    # Check if GPU supports bf16 (Ampere+)
+    # Check device capabilities for mixed precision
+    # MPS is auto-detected by Trainer, no special flag needed
     use_bf16 = False
     use_fp16 = False
+
     if torch.cuda.is_available():
         # Try to use bf16 on Ampere+ GPUs, fallback to fp16
         if torch.cuda.get_device_capability()[0] >= 8:
             use_bf16 = True
         else:
             use_fp16 = True
+    # MPS uses fp32 by default, no mixed precision needed
+
+    # Calculate warmup steps from ratio
+    # Approximate: total_steps = (num_samples / batch_size / accumulation) * epochs
+    num_train_samples = len(train_ds)
+    total_steps = (num_train_samples // batch_size // gradient_accumulation_steps) * epochs
+    warmup_steps = int(total_steps * warmup_ratio)
 
     training_args = TrainingArguments(
         output_dir=str(model_dir / "checkpoints"),
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size * 2,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
         weight_decay=0.01,
-        warmup_ratio=0.1,  # Add warmup for stability
+        warmup_steps=warmup_steps,
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="f1_macro",
         greater_is_better=True,
-        logging_dir=str(model_dir / "logs"),
         logging_steps=100,
+        report_to="none",  # Disable external logging (tensorboard not installed)
         seed=SEED,
         fp16=use_fp16,
         bf16=use_bf16,
+        gradient_checkpointing=True,  # Memory efficiency for large models
     )
 
     # Custom trainer with weighted loss
     class WeightedTrainer(Trainer):
-        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-            """Compute a class-balanced multi-label loss using BCEWithLogitsLoss.
+        def __init__(self, class_weights_tensor, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.class_weights_tensor = class_weights_tensor
 
-            This overrides the default Trainer.compute_loss to apply class-balanced
-            weighting via torch.nn.BCEWithLogitsLoss, using the precomputed
-            class_weights_tensor as the pos_weight argument. This implements
-            class-balanced loss for the multi-label emotion classification task.
-            """
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            """Compute a class-balanced multi-label loss using BCEWithLogitsLoss."""
             labels = inputs.pop("labels")
             outputs = model(**inputs)
             logits = outputs.logits
-            loss_fct = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
+            # Move class weights to same device as logits
+            weights = self.class_weights_tensor.to(logits.device)
+            loss_fct = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
             loss = loss_fct(logits, labels)
             return (loss, outputs) if return_outputs else loss
 
@@ -519,14 +563,24 @@ def train_neural_model(
             "hamming_loss": hamming_loss(labels, preds),
         }
 
-    # Initialize trainer
-    trainer = WeightedTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_ds,
-        eval_dataset=val_ds,
-        compute_metrics=compute_metrics,
-    )
+    # Initialize trainer - use weighted or standard based on flag
+    if use_class_weights and class_weights_tensor is not None:
+        trainer = WeightedTrainer(
+            class_weights_tensor=class_weights_tensor,
+            model=model,
+            args=training_args,
+            train_dataset=train_ds,
+            eval_dataset=val_ds,
+            compute_metrics=compute_metrics,
+        )
+    else:
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_ds,
+            eval_dataset=val_ds,
+            compute_metrics=compute_metrics,
+        )
 
     # Train
     print("\nStarting training...")
@@ -620,6 +674,13 @@ def main():
         dataset["validation"] = dataset["validation"].select(range(min(200, len(dataset["validation"]))))
         print(f"  Train samples: {len(dataset['train'])}")
         print(f"  Val samples: {len(dataset['validation'])}")
+    elif args.max_samples:
+        print(f"\n📊 Using limited dataset: {args.max_samples} train samples")
+        dataset["train"] = dataset["train"].select(range(min(args.max_samples, len(dataset["train"]))))
+        val_samples = min(args.max_samples // 5, len(dataset["validation"]))
+        dataset["validation"] = dataset["validation"].select(range(val_samples))
+        print(f"  Train samples: {len(dataset['train'])}")
+        print(f"  Val samples: {len(dataset['validation'])}")
 
     # Extract texts and labels
     train_texts = dataset["train"]["text"]
@@ -640,6 +701,9 @@ def main():
     if args.fast_dev_run and epochs is None:
         epochs = 1
 
+    # Determine if class weights should be used
+    use_class_weights = not args.no_class_weights
+
     if args.model in ["roberta", "all"]:
         device = setup_environment(args.seed)
         results["roberta"] = train_neural_model(
@@ -651,25 +715,29 @@ def main():
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             device=device,
+            use_class_weights=use_class_weights,
         )
 
     if args.model in ["deberta", "all"]:
         device = setup_environment(args.seed)
-        # Check if CUDA available (DeBERTa-large needs more VRAM)
+        batch_size = args.batch_size
+        # Warn about memory requirements, but allow running anyway
         if not torch.cuda.is_available():
-            print("\nWARNING: DeBERTa-v3-large requires CUDA GPU with 16GB+ VRAM")
-            print("Skipping DeBERTa training on this machine.")
-        else:
-            results["deberta"] = train_neural_model(
-                "deberta",
-                dataset["train"],
-                dataset["validation"],
-                args.output_dir,
-                epochs=epochs,
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
-                device=device,
-            )
+            print("\nWARNING: DeBERTa-v3-large is memory-intensive.")
+            print("Running on CPU/MPS - this will be slow. Using batch_size=2.")
+            batch_size = batch_size or 2  # Reduce batch size for non-CUDA
+
+        results["deberta"] = train_neural_model(
+            "deberta",
+            dataset["train"],
+            dataset["validation"],
+            args.output_dir,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=args.learning_rate,
+            device=device,
+            use_class_weights=use_class_weights,
+        )
 
     # Print summary
     print("\n" + "=" * 60)
