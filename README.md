@@ -95,6 +95,15 @@ curl -X POST http://localhost:8000/predict \
 curl http://localhost:8000/model/info
 ```
 
+### 5. Launch Streamlit UI (Optional)
+
+```bash
+# In a new terminal (keep the API running)
+uv run streamlit run app/streamlit_app.py
+```
+
+Open http://localhost:8501 for an interactive web interface.
+
 ## API Reference
 
 ### Endpoints
@@ -130,6 +139,97 @@ POST /predict
 }
 ```
 
+## Streamlit Web UI
+
+An interactive web interface for emotion classification.
+
+### Features
+
+- Real-time text classification
+- Adjustable confidence threshold
+- Bar chart visualization of emotion scores
+- Model information display
+- Example texts for quick testing
+
+### Running the UI
+
+```bash
+# Terminal 1: Start the FastAPI backend
+uv run uvicorn src.predict.predict:app --reload
+
+# Terminal 2: Start Streamlit frontend
+uv run streamlit run app/streamlit_app.py
+```
+
+Open http://localhost:8501 in your browser.
+
+### Using Docker Compose
+
+Run both services with a single command:
+
+```bash
+docker-compose up
+```
+
+This starts:
+- FastAPI API at http://localhost:8000
+- Streamlit UI at http://localhost:8501
+
+### Deploy to Streamlit Cloud
+
+You can deploy the Streamlit UI to [Streamlit Community Cloud](https://streamlit.io/cloud) for free hosting.
+
+#### Prerequisites
+
+1. Push your repository to GitHub
+2. Ensure you have a trained model in `models/` directory
+3. Have a running FastAPI backend accessible via public URL (or deploy API separately)
+
+#### Deployment Steps
+
+1. **Go to** [share.streamlit.io](https://share.streamlit.io)
+
+2. **Sign in** with your GitHub account
+
+3. **Click** "New app" and fill in:
+   - **Repository**: Select your GitHub repo
+   - **Branch**: `main`
+   - **Main file path**: `app/streamlit_app.py`
+
+4. **Configure secrets** (Settings → Secrets):
+   ```toml
+   # .streamlit/secrets.toml
+   API_URL = "https://your-api-url.com"
+   ```
+
+5. **Click** "Deploy!"
+
+#### Configuration for Cloud
+
+Create `.streamlit/config.toml` in your repository:
+
+```toml
+[theme]
+primaryColor = "#3b82f6"
+backgroundColor = "#f8fafc"
+secondaryBackgroundColor = "#e2e8f0"
+textColor = "#1e293b"
+
+[server]
+headless = true
+port = 8501
+```
+
+#### Notes
+
+- **API Backend**: Streamlit Cloud only hosts the frontend. You need to deploy the FastAPI backend separately (e.g., Railway, Render, Fly.io, or any cloud provider)
+- **Model Files**: Large model files should be hosted externally or loaded from HuggingFace Hub
+- **Free Tier Limits**: Streamlit Community Cloud has resource limits for free apps
+
+### Screenshot
+
+![Streamlit UI](screenshots/streamlit_ui.png)
+
 ## Docker
 
 ### Build
@@ -161,6 +261,8 @@ curl -X POST http://localhost:8000/predict \
 
 ```
 goemotions-classifier/
+├── app/
+│   └── streamlit_app.py    # Streamlit web UI
 ├── dataset/                 # Downloaded dataset cache
 ├── models/                  # Saved trained models
 │   ├── tfidf_baseline/     # TF-IDF model artifacts
@@ -181,6 +283,7 @@ goemotions-classifier/
 ├── .python-version
 ├── pyproject.toml
 ├── Dockerfile
+├── docker-compose.yml      # Multi-service deployment
 └── README.md
 ```
 
@@ -257,7 +360,7 @@ Options:
 
 - 16GB RAM
 - GPU with 8GB+ VRAM (for neural models)
-- CUDA 11.8+ (Windows/Linux) or MPS (Mac M1/M2/M3)
+- CUDA 12.6+ (Windows/Linux) or MPS (Mac M1/M2/M3)
 
 ## Dataset
 

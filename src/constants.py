@@ -61,7 +61,7 @@ MODEL_CONFIGS = {
         "model_name": "microsoft/deberta-v3-large",
         "max_length": 128,
         "batch_size": 8,
-        "learning_rate": 1e-5,
+        "learning_rate": 5e-6,  # Lower LR for stability with large model
         "epochs": 3,
     },
 }
@@ -72,3 +72,71 @@ DEFAULT_THRESHOLD = 0.35
 # Dataset configuration
 DATASET_NAME = "google-research-datasets/go_emotions"
 DATASET_CONFIG = "simplified"
+
+# Emotion colors for visualization (modern palette)
+EMOTION_COLORS = {
+    # Positive - warm tones
+    "joy": "#FFD700",
+    "love": "#FF6B9D",
+    "excitement": "#FF6B6B",
+    "gratitude": "#26DE81",
+    "admiration": "#A55EEA",
+    "amusement": "#FF9F43",
+    "optimism": "#FED330",
+    "pride": "#9B59B6",
+    "relief": "#7BED9F",
+    "approval": "#4ECDC4",
+    "caring": "#FF9FF3",
+    "desire": "#E84393",
+    # Negative - cool tones
+    "anger": "#EE5A5A",
+    "sadness": "#74B9FF",
+    "fear": "#2D3436",
+    "disappointment": "#636E72",
+    "annoyance": "#FC8181",
+    "disgust": "#6C5CE7",
+    "grief": "#4A5568",
+    "remorse": "#81ECEC",
+    "nervousness": "#FDCB6E",
+    # Cognitive
+    "confusion": "#A29BFE",
+    "curiosity": "#00CEC9",
+    "realization": "#55EFC4",
+    "surprise": "#FD79A8",
+    "embarrassment": "#FAB1A0",
+    # Neutral
+    "neutral": "#95A5A6",
+    "disapproval": "#B2BEC3",
+}
+
+# Emotion emojis for UI
+EMOTION_EMOJIS = {
+    "admiration": "🤩",
+    "amusement": "😄",
+    "anger": "😠",
+    "annoyance": "😒",
+    "approval": "👍",
+    "caring": "🤗",
+    "confusion": "😕",
+    "curiosity": "🤔",
+    "desire": "😍",
+    "disappointment": "😞",
+    "disapproval": "👎",
+    "disgust": "🤢",
+    "embarrassment": "😳",
+    "excitement": "🤩",
+    "fear": "😨",
+    "gratitude": "🙏",
+    "grief": "😢",
+    "joy": "😊",
+    "love": "❤️",
+    "nervousness": "😰",
+    "optimism": "🌟",
+    "pride": "😌",
+    "realization": "💡",
+    "relief": "😌",
+    "remorse": "😔",
+    "sadness": "😢",
+    "surprise": "😲",
+    "neutral": "😐",
+}

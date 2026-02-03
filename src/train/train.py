@@ -76,6 +76,11 @@ def parse_args():
         default=SEED,
         help=f"Random seed (default: {SEED})",
     )
+    parser.add_argument(
+        "--fast-dev-run",
+        action="store_true",
+        help="Quick sanity check with 1000 train samples, 200 val samples",
+    )
     return parser.parse_args()
 
 
@@ -390,13 +395,25 @@ def train_neural_model(
 
     # Load model
     print(f"Loading model from {model_name}...")
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name,
-        num_labels=NUM_LABELS,
-        problem_type="multi_label_classification",
-        id2label=ID2LABEL,
-        label2id=LABEL2ID,
-    )
+    # For DeBERTa-v3, suppress warnings about gamma/beta weight names
+    # (this is expected behavior, transformers handles the remapping)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*gamma.*beta.*")
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=NUM_LABELS,
+            problem_type="multi_label_classification",
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
+
+    # Verify model loaded correctly
+    param_count = sum(p.numel() for p in model.parameters())
+    trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Total parameters: {param_count:,}")
+    print(f"  Trainable parameters: {trainable_count:,}")
+
     model.to(device)
 
     # Calculate class weights
@@ -404,6 +421,16 @@ def train_neural_model(
     class_weights_tensor = torch.tensor(class_weights, device=device)
 
     # Training arguments
+    # Check if GPU supports bf16 (Ampere+)
+    use_bf16 = False
+    use_fp16 = False
+    if torch.cuda.is_available():
+        # Try to use bf16 on Ampere+ GPUs, fallback to fp16
+        if torch.cuda.get_device_capability()[0] >= 8:
+            use_bf16 = True
+        else:
+            use_fp16 = True
+
     training_args = TrainingArguments(
         output_dir=str(model_dir / "checkpoints"),
         num_train_epochs=epochs,
@@ -411,6 +438,7 @@ def train_neural_model(
         per_device_eval_batch_size=batch_size * 2,
         learning_rate=learning_rate,
         weight_decay=0.01,
+        warmup_ratio=0.1,  # Add warmup for stability
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
@@ -419,8 +447,8 @@ def train_neural_model(
         logging_dir=str(model_dir / "logs"),
         logging_steps=100,
         seed=SEED,
-        fp16=False,
-        bf16=torch.cuda.is_available(),
+        fp16=use_fp16,
+        bf16=use_bf16,
     )
 
     # Custom trainer with weighted loss
@@ -471,7 +499,15 @@ def train_neural_model(
 
     # Get predictions for threshold optimization
     predictions = trainer.predict(val_ds)
-    val_probs = torch.sigmoid(torch.tensor(predictions.predictions)).numpy()
+    logits = predictions.predictions
+    val_probs = torch.sigmoid(torch.tensor(logits)).numpy()
+
+    # Diagnostic output to detect training failures
+    print(f"\nDiagnostics:")
+    print(f"  Logits range: [{logits.min():.4f}, {logits.max():.4f}]")
+    print(f"  Probs range: [{val_probs.min():.4f}, {val_probs.max():.4f}]")
+    print(f"  Probs mean: {val_probs.mean():.4f}")
+    print(f"  Samples with any prob > 0.5: {(val_probs.max(axis=1) > 0.5).sum()}/{len(val_probs)}")
 
     # Optimize threshold
     best_threshold, best_f1 = optimize_threshold(val_probs, val_labels)
@@ -536,6 +572,14 @@ def main():
     print("\nLoading GoEmotions dataset...")
     dataset = load_goemotions()
 
+    # Fast dev run - use small subset for sanity checking
+    if args.fast_dev_run:
+        print("\n⚡ FAST DEV RUN: Using subset of data for quick validation")
+        dataset["train"] = dataset["train"].select(range(min(1000, len(dataset["train"]))))
+        dataset["validation"] = dataset["validation"].select(range(min(200, len(dataset["validation"]))))
+        print(f"  Train samples: {len(dataset['train'])}")
+        print(f"  Val samples: {len(dataset['validation'])}")
+
     # Extract texts and labels
     train_texts = dataset["train"]["text"]
     val_texts = dataset["validation"]["text"]
@@ -550,6 +594,11 @@ def main():
             train_texts, train_labels, val_texts, val_labels, args.output_dir
         )
 
+    # Override epochs for fast dev run
+    epochs = args.epochs
+    if args.fast_dev_run and epochs is None:
+        epochs = 1
+
     if args.model in ["roberta", "all"]:
         device = setup_environment(args.seed)
         results["roberta"] = train_neural_model(
@@ -557,7 +606,7 @@ def main():
             dataset["train"],
             dataset["validation"],
             args.output_dir,
-            epochs=args.epochs,
+            epochs=epochs,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             device=device,
@@ -575,7 +624,7 @@ def main():
                 dataset["train"],
                 dataset["validation"],
                 args.output_dir,
-                epochs=args.epochs,
+                epochs=epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.learning_rate,
                 device=device,

@@ -38,6 +38,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy application code
 COPY src/ ./src/
+COPY app/ ./app/
 COPY models/ ./models/
 
 # Change ownership to non-root user
