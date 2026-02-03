@@ -61,11 +61,11 @@ MODEL_CONFIGS = {
         "model_name": "microsoft/deberta-v3-large",
         "max_length": 256,
         "batch_size": 8,
-        "gradient_accumulation_steps": 1,
-        "learning_rate": 2e-5,  # Same as reference (base), may need 1e-5 for large
+        "gradient_accumulation_steps": 2,  # effective batch size = 16
+        "learning_rate": 2e-5,
         "epochs": 5,
-        "warmup_ratio": 0.0,
-        "lr_scheduler_type": "linear",
+        "warmup_ratio": 0.06,  # CRITICAL: warmup prevents destroying pretrained weights
+        "lr_scheduler_type": "cosine",  # smoother decay than linear
     },
 }
 

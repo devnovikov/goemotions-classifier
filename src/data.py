@@ -101,16 +101,19 @@ def dataset_to_dataframe(dataset) -> pd.DataFrame:
     return df
 
 
-def compute_class_weights(dataset, max_weight: float = 10.0) -> np.ndarray:
+def compute_class_weights(
+    dataset, max_weight: float = 2.0, smoothing: bool = True
+) -> np.ndarray:
     """
     Compute class weights for handling class imbalance.
 
-    Uses inverse frequency weighting with capping to prevent
-    destabilization from extremely rare classes.
+    Uses inverse frequency weighting with optional sqrt smoothing and capping
+    to prevent destabilization from extremely rare classes.
 
     Args:
         dataset: HuggingFace dataset with 'labels' column
         max_weight: Maximum weight cap to prevent training instability
+        smoothing: If True, apply sqrt to weights for gentler balancing
 
     Returns:
         Array of class weights
@@ -124,6 +127,10 @@ def compute_class_weights(dataset, max_weight: float = 10.0) -> np.ndarray:
     # Inverse frequency weighting
     total_samples = len(dataset)
     weights = total_samples / (NUM_LABELS * class_counts)
+
+    # Apply sqrt smoothing to reduce aggressiveness (prevents model collapse)
+    if smoothing:
+        weights = np.sqrt(weights)
 
     # Normalize to have mean of 1
     weights = weights / weights.mean()
