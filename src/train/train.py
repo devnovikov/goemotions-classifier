@@ -486,6 +486,20 @@ def train_neural_model(
 
     model.to(device)
 
+    # Initialize classifier bias with class priors
+    # This gives the model a proper starting point based on class frequencies
+    if hasattr(model, 'classifier') and hasattr(model.classifier, 'bias'):
+        with torch.no_grad():
+            label_matrix = create_label_matrix(train_dataset)
+            pos_rates = label_matrix.mean(axis=0)
+            # Clip to avoid log(0) or log(inf)
+            pos_rates = np.clip(pos_rates, 0.001, 0.999)
+            # bias = log(p / (1-p)) gives sigmoid(bias) = p
+            prior_bias = np.log(pos_rates / (1 - pos_rates))
+            model.classifier.bias.copy_(torch.tensor(prior_bias, dtype=torch.float32))
+            print(f"  Initialized classifier bias with class priors")
+            print(f"  Bias range: [{prior_bias.min():.2f}, {prior_bias.max():.2f}]")
+
     # Calculate class weights (will be moved to correct device in compute_loss)
     class_weights_tensor = None
     if use_class_weights:
