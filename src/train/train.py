@@ -417,13 +417,13 @@ def train_neural_model(
 
     # Use standard AutoModelForSequenceClassification for all models
     # Transformers library handles LayerNorm naming (gamma/beta vs weight/bias) automatically
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_name,
-            num_labels=NUM_LABELS,
-            problem_type="multi_label_classification",
-            id2label=ID2LABEL,
-            label2id=LABEL2ID,
-        )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=NUM_LABELS,
+        problem_type="multi_label_classification",
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+    )
 
     # Verify model loaded correctly
     param_count = sum(p.numel() for p in model.parameters())
