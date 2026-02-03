@@ -350,6 +350,7 @@ def train_neural_model(
     max_length = config["max_length"]
     gradient_accumulation_steps = config.get("gradient_accumulation_steps", 1)
     warmup_ratio = config.get("warmup_ratio", 0.1)
+    lr_scheduler_type = config.get("lr_scheduler_type", "cosine")
 
     effective_batch = batch_size * gradient_accumulation_steps
     print(f"\nModel: {model_name}")
@@ -357,7 +358,7 @@ def train_neural_model(
     print(f"Batch size: {batch_size} (effective: {effective_batch} with {gradient_accumulation_steps}x accumulation)")
     print(f"Learning rate: {learning_rate}")
     print(f"Max length: {max_length}")
-    print(f"Warmup ratio: {warmup_ratio}")
+    print(f"LR scheduler: {lr_scheduler_type}")
 
     # Setup device
     if device is None:
@@ -523,17 +524,18 @@ def train_neural_model(
         learning_rate=learning_rate,
         weight_decay=0.01,
         warmup_steps=warmup_steps,
+        lr_scheduler_type=lr_scheduler_type,
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="f1_macro",
         greater_is_better=True,
         logging_steps=100,
-        report_to="none",  # Disable external logging (tensorboard not installed)
+        report_to="none",
         seed=SEED,
         fp16=use_fp16,
         bf16=use_bf16,
-        gradient_checkpointing=True,  # Memory efficiency for large models
+        gradient_checkpointing=True,
     )
 
     # Custom trainer with weighted loss

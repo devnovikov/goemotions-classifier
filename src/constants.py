@@ -59,12 +59,13 @@ MODEL_CONFIGS = {
     "deberta": {
         "name": "DeBERTa-v3-large",
         "model_name": "microsoft/deberta-v3-large",
-        "max_length": 256,  # Increased from 128 for better context
-        "batch_size": 4,  # Smaller batch, use gradient accumulation
-        "gradient_accumulation_steps": 4,  # Effective batch = 16
-        "learning_rate": 3e-5,  # Recommended for DeBERTa fine-tuning
-        "epochs": 3,
-        "warmup_ratio": 0.15,  # More warmup for stability
+        "max_length": 256,
+        "batch_size": 8,
+        "gradient_accumulation_steps": 1,
+        "learning_rate": 2e-5,  # Same as reference (base), may need 1e-5 for large
+        "epochs": 5,
+        "warmup_ratio": 0.0,
+        "lr_scheduler_type": "linear",
     },
 }
 
