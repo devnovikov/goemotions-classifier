@@ -441,15 +441,23 @@ def train_neural_model(
             weights_file = hf_hub_download(repo_id=model_name, filename="pytorch_model.bin")
             state_dict = torch.load(weights_file, map_location="cpu", weights_only=True)
 
-        # Remap LayerNorm parameter names: gamma->weight, beta->bias
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            new_key = key
-            if ".gamma" in key:
-                new_key = key.replace(".gamma", ".weight")
-            elif ".beta" in key:
-                new_key = key.replace(".beta", ".bias")
-            new_state_dict[new_key] = value
+        # Check if remapping is needed (some models use gamma/beta, others use weight/bias)
+        sample_keys = list(state_dict.keys())[:10]
+        needs_remapping = any(".gamma" in k or ".beta" in k for k in state_dict.keys())
+
+        if needs_remapping:
+            print("  Remapping LayerNorm: gamma->weight, beta->bias")
+            new_state_dict = {}
+            for key, value in state_dict.items():
+                new_key = key
+                if ".gamma" in key:
+                    new_key = key.replace(".gamma", ".weight")
+                elif ".beta" in key:
+                    new_key = key.replace(".beta", ".bias")
+                new_state_dict[new_key] = value
+        else:
+            print("  LayerNorm already uses weight/bias naming")
+            new_state_dict = state_dict
 
         # Create model and load remapped weights
         with warnings.catch_warnings():
