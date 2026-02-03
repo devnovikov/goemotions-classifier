@@ -549,7 +549,7 @@ def train_neural_model(
         seed=SEED,
         fp16=use_fp16,
         bf16=use_bf16,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,  # Disabled - was preventing learning
     )
 
     # Custom trainer with weighted loss
