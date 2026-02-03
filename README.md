@@ -1,10 +1,30 @@
 # GoEmotions Multi-Label Emotion Classifier
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://goemotions-classifier.streamlit.app/)
+
+**[Try the live demo →](https://goemotions-classifier.streamlit.app/)**
+
 Multi-label emotion classification system built on the [GoEmotions](https://github.com/google-research/google-research/tree/master/goemotions) dataset from Google Research.
 
 ## Overview
 
-This project implements an end-to-end machine learning pipeline for classifying emotions in text. Given a piece of text, the model predicts one or more of 28 emotion categories.
+### The Problem
+
+Understanding emotions in text is a fundamental challenge in Natural Language Processing (NLP). Traditional sentiment analysis classifies text as simply "positive", "negative", or "neutral" — but human communication is far more nuanced. A single message can express **multiple emotions simultaneously**: excitement mixed with nervousness, gratitude alongside relief, or anger combined with disappointment.
+
+**Why does this matter?**
+
+- **Customer Support**: Automatically detect frustration, confusion, or satisfaction in support tickets to prioritize and route them appropriately
+- **Social Media Monitoring**: Understand the emotional landscape of brand mentions, product feedback, or public discourse
+- **Mental Health Applications**: Identify emotional patterns in journaling apps or therapy chatbots
+- **Content Moderation**: Detect harmful emotional content like anger, disgust, or fear in online communities
+- **Market Research**: Analyze emotional responses to products, campaigns, or events at scale
+
+### The Solution
+
+This project implements an end-to-end machine learning pipeline for **multi-label emotion classification**. Unlike binary sentiment analysis, our models can detect multiple co-occurring emotions in a single text, capturing the full emotional complexity of human expression.
+
+Given a piece of text, the model predicts one or more of **28 fine-grained emotion categories** — from basic emotions like joy and anger to nuanced states like embarrassment, relief, and realization.
 
 ### Features
 

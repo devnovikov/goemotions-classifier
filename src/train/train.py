@@ -400,9 +400,11 @@ def train_neural_model(
     # We need to handle this explicitly
     if "deberta-v3" in model_name.lower():
         from transformers import DebertaV2ForSequenceClassification, DebertaV2Config
+        from transformers.modeling_utils import load_state_dict
+        from huggingface_hub import hf_hub_download
         import warnings
 
-        # Load config and create model
+        # Load config
         config = DebertaV2Config.from_pretrained(
             model_name,
             num_labels=NUM_LABELS,
@@ -411,15 +413,17 @@ def train_neural_model(
             label2id=LABEL2ID,
         )
 
-        # Load state dict and remap gamma/beta -> weight/bias
-        from huggingface_hub import hf_hub_download
-        import safetensors.torch
+        # Try to find the weights file (safetensors or pytorch_model.bin)
+        try:
+            weights_file = hf_hub_download(repo_id=model_name, filename="model.safetensors")
+            import safetensors.torch
+            state_dict = safetensors.torch.load_file(weights_file)
+        except Exception:
+            # Fallback to pytorch format
+            weights_file = hf_hub_download(repo_id=model_name, filename="pytorch_model.bin")
+            state_dict = torch.load(weights_file, map_location="cpu", weights_only=True)
 
-        # Download the model weights
-        weights_file = hf_hub_download(repo_id=model_name, filename="model.safetensors")
-        state_dict = safetensors.torch.load_file(weights_file)
-
-        # Remap LayerNorm parameter names
+        # Remap LayerNorm parameter names: gamma->weight, beta->bias
         new_state_dict = {}
         for key, value in state_dict.items():
             new_key = key
@@ -433,9 +437,9 @@ def train_neural_model(
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
             model = DebertaV2ForSequenceClassification(config)
-            # Load only the base model weights (classifier is randomly initialized)
             missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
-            print(f"  Loaded weights with {len(missing)} missing keys (classifier layer)")
+            # Expected: classifier.weight, classifier.bias, pooler (4 keys)
+            print(f"  Loaded weights (missing {len(missing)} classifier keys, {len(unexpected)} unexpected)")
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name,
