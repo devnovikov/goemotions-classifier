@@ -102,13 +102,15 @@ def dataset_to_dataframe(dataset) -> pd.DataFrame:
 
 
 def compute_class_weights(
-    dataset, max_weight: float = 2.0, smoothing: bool = True
+    dataset, max_weight: float = 10.0, smoothing: bool = False
 ) -> np.ndarray:
     """
-    Compute class weights for handling class imbalance.
+    Compute pos_weight for BCEWithLogitsLoss to handle class imbalance.
 
-    Uses inverse frequency weighting with optional sqrt smoothing and capping
-    to prevent destabilization from extremely rare classes.
+    pos_weight[i] = num_negative[i] / num_positive[i]
+
+    This increases the loss contribution from positive samples for rare classes,
+    helping the model learn to predict them.
 
     Args:
         dataset: HuggingFace dataset with 'labels' column
@@ -116,26 +118,26 @@ def compute_class_weights(
         smoothing: If True, apply sqrt to weights for gentler balancing
 
     Returns:
-        Array of class weights
+        Array of pos_weights for BCEWithLogitsLoss
     """
     label_matrix = create_label_matrix(dataset)
-    class_counts = label_matrix.sum(axis=0)
+    num_samples = len(dataset)
+
+    # Count positives per class
+    num_positive = label_matrix.sum(axis=0)
+    num_negative = num_samples - num_positive
 
     # Avoid division by zero
-    class_counts = np.maximum(class_counts, 1)
+    num_positive = np.maximum(num_positive, 1)
 
-    # Inverse frequency weighting
-    total_samples = len(dataset)
-    weights = total_samples / (NUM_LABELS * class_counts)
+    # pos_weight = num_negative / num_positive
+    weights = num_negative / num_positive
 
-    # Apply sqrt smoothing to reduce aggressiveness (prevents model collapse)
+    # Apply sqrt smoothing if requested (reduces aggressiveness)
     if smoothing:
         weights = np.sqrt(weights)
 
-    # Normalize to have mean of 1
-    weights = weights / weights.mean()
-
-    # Cap weights to prevent training instability from rare classes
+    # Cap weights to prevent training instability from very rare classes
     weights = np.minimum(weights, max_weight)
 
     return weights.astype(np.float32)
