@@ -415,15 +415,57 @@ def train_neural_model(
     # Load model
     print(f"Loading model from {model_name}...")
 
-    # Use standard AutoModelForSequenceClassification for all models
-    # Transformers library handles LayerNorm naming (gamma/beta vs weight/bias) automatically
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name,
-        num_labels=NUM_LABELS,
-        problem_type="multi_label_classification",
-        id2label=ID2LABEL,
-        label2id=LABEL2ID,
-    )
+    # DeBERTa-v3 has gamma/beta naming for LayerNorm instead of weight/bias
+    # We need to handle this explicitly with manual remapping
+    if "deberta-v3" in model_name.lower():
+        from transformers import DebertaV2ForSequenceClassification, DebertaV2Config
+        from huggingface_hub import hf_hub_download
+        import warnings
+
+        # Load config
+        config = DebertaV2Config.from_pretrained(
+            model_name,
+            num_labels=NUM_LABELS,
+            problem_type="multi_label_classification",
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
+
+        # Try to find the weights file (safetensors or pytorch_model.bin)
+        try:
+            weights_file = hf_hub_download(repo_id=model_name, filename="model.safetensors")
+            import safetensors.torch
+            state_dict = safetensors.torch.load_file(weights_file)
+        except Exception:
+            # Fallback to pytorch format
+            weights_file = hf_hub_download(repo_id=model_name, filename="pytorch_model.bin")
+            state_dict = torch.load(weights_file, map_location="cpu", weights_only=True)
+
+        # Remap LayerNorm parameter names: gamma->weight, beta->bias
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key
+            if ".gamma" in key:
+                new_key = key.replace(".gamma", ".weight")
+            elif ".beta" in key:
+                new_key = key.replace(".beta", ".bias")
+            new_state_dict[new_key] = value
+
+        # Create model and load remapped weights
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            model = DebertaV2ForSequenceClassification(config)
+            missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+            # Expected: classifier.weight, classifier.bias, pooler (4 keys)
+            print(f"  Loaded weights (missing {len(missing)} classifier keys, {len(unexpected)} unexpected)")
+    else:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=NUM_LABELS,
+            problem_type="multi_label_classification",
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
 
     # Verify model loaded correctly
     param_count = sum(p.numel() for p in model.parameters())

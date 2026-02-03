@@ -62,9 +62,9 @@ MODEL_CONFIGS = {
         "max_length": 256,
         "batch_size": 8,
         "gradient_accumulation_steps": 2,  # effective batch size = 16
-        "learning_rate": 5e-5,  # increased from 2e-5 - model wasn't learning
+        "learning_rate": 1e-4,  # increased to 1e-4 - model wasn't learning with 5e-5
         "epochs": 5,
-        "warmup_ratio": 0.06,  # CRITICAL: warmup prevents destroying pretrained weights
+        "warmup_ratio": 0.1,  # increased warmup for higher lr
         "lr_scheduler_type": "cosine",  # smoother decay than linear
     },
 }
