@@ -215,6 +215,10 @@ models/*/pytorch_model.bin
 models/*/model.safetensors
 models/*/tokenizer.json
 models/*/vocab.txt
+
+# Allow TF-IDF model (small enough to commit)
+!models/tfidf_baseline/
+!models/tfidf_baseline/*
 *.h5
 *.hdf5
 *.onnx

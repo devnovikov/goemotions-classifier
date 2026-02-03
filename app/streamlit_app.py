@@ -1,17 +1,24 @@
 """
 Streamlit UI for GoEmotions Multi-Label Emotion Classifier.
 
+Supports two modes:
+1. API Mode: Connects to FastAPI backend (default for local development)
+2. Standalone Mode: Loads TF-IDF model directly (for Streamlit Cloud deployment)
+
 Target versions:
 - streamlit>=1.30.0
 - plotly>=5.18.0
 - python>=3.11
 """
 
+import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import plotly.graph_objects as go
 import requests
 import streamlit as st
@@ -21,10 +28,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Try to import from src.constants, fallback to embedded constants for Streamlit Cloud
 try:
-    from src.constants import DEFAULT_THRESHOLD, EMOTION_COLORS, EMOTION_EMOJIS
+    from src.constants import DEFAULT_THRESHOLD, EMOTION_COLORS, EMOTION_EMOJIS, EMOTION_LABELS
 except ImportError:
     # Embedded constants for standalone deployment (Streamlit Cloud)
     DEFAULT_THRESHOLD = 0.35
+
+    EMOTION_LABELS = [
+        "admiration", "amusement", "anger", "annoyance", "approval", "caring",
+        "confusion", "curiosity", "desire", "disappointment", "disapproval",
+        "disgust", "embarrassment", "excitement", "fear", "gratitude", "grief",
+        "joy", "love", "nervousness", "optimism", "pride", "realization",
+        "relief", "remorse", "sadness", "surprise", "neutral",
+    ]
 
     EMOTION_COLORS = {
         "joy": "#FFD700", "love": "#FF6B9D", "excitement": "#FF6B6B",
@@ -53,21 +68,124 @@ except ImportError:
 # Configuration
 # ============================================================================
 
-# Support both environment variables and Streamlit secrets (for Streamlit Cloud)
+# Determine mode: standalone (no API) or API mode
+def get_mode() -> str:
+    """Determine operating mode: 'standalone' or 'api'."""
+    # Check for explicit mode setting
+    try:
+        if hasattr(st, "secrets") and "MODE" in st.secrets:
+            return st.secrets["MODE"]
+    except Exception:
+        pass
+    if os.environ.get("MODE"):
+        return os.environ["MODE"]
+
+    # Auto-detect: if API_URL is not set and model exists locally, use standalone
+    api_url = os.environ.get("API_URL", "")
+    try:
+        if hasattr(st, "secrets") and "API_URL" in st.secrets:
+            api_url = st.secrets["API_URL"]
+    except Exception:
+        pass
+
+    # If no API URL configured, try standalone mode
+    if not api_url:
+        model_path = Path(__file__).parent.parent / "models" / "tfidf_baseline"
+        if model_path.exists() and (model_path / "classifier.joblib").exists():
+            return "standalone"
+
+    return "api"
+
+
 def get_api_url() -> str:
     """Get API URL from secrets, env var, or default."""
-    # 1. Try Streamlit secrets (for Streamlit Cloud)
     try:
         if hasattr(st, "secrets") and "API_URL" in st.secrets:
             return st.secrets["API_URL"]
     except Exception:
         pass
-    # 2. Try environment variable
-    # 3. Default to localhost
     return os.environ.get("API_URL", "http://localhost:8000")
 
 
+MODE = get_mode()
 API_URL = get_api_url()
+
+
+# ============================================================================
+# Standalone Model (TF-IDF)
+# ============================================================================
+
+@st.cache_resource
+def load_tfidf_model():
+    """Load TF-IDF model for standalone mode. Cached across reruns."""
+    import joblib
+
+    model_path = Path(__file__).parent.parent / "models" / "tfidf_baseline"
+
+    if not model_path.exists():
+        return None, None, None
+
+    try:
+        vectorizer = joblib.load(model_path / "vectorizer.joblib")
+        classifier = joblib.load(model_path / "classifier.joblib")
+
+        with open(model_path / "metadata.json") as f:
+            metadata = json.load(f)
+
+        return vectorizer, classifier, metadata
+    except Exception as e:
+        st.error(f"Failed to load model: {e}")
+        return None, None, None
+
+
+def predict_standalone(text: str, threshold: float) -> Optional[dict]:
+    """Make prediction using local TF-IDF model."""
+    vectorizer, classifier, metadata = load_tfidf_model()
+
+    if vectorizer is None or classifier is None:
+        return None
+
+    start_time = time.time()
+
+    # Vectorize and predict
+    X = vectorizer.transform([text])
+    probs = classifier.predict_proba(X)[0]
+
+    inference_time = (time.time() - start_time) * 1000
+
+    # Apply threshold
+    predicted_indices = np.where(probs >= threshold)[0]
+    predicted_labels = [EMOTION_LABELS[i] for i in predicted_indices]
+
+    # Sort by score
+    predicted_labels = sorted(
+        predicted_labels,
+        key=lambda x: probs[EMOTION_LABELS.index(x)],
+        reverse=True,
+    )
+
+    # Create scores dict (only scores >= 0.1)
+    scores = {
+        EMOTION_LABELS[i]: float(probs[i])
+        for i in range(len(EMOTION_LABELS))
+        if probs[i] >= 0.1
+    }
+    scores = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True))
+
+    return {
+        "text": text,
+        "labels": predicted_labels,
+        "scores": scores,
+        "threshold": threshold,
+        "model_type": "tfidf",
+        "inference_time_ms": inference_time,
+    }
+
+
+def get_standalone_model_info() -> Optional[dict]:
+    """Get model info for standalone mode."""
+    _, _, metadata = load_tfidf_model()
+    return metadata
 
 st.set_page_config(
     page_title="GoEmotions Classifier",
@@ -261,12 +379,19 @@ def apply_custom_css() -> None:
 
 
 # ============================================================================
-# API Functions
+# API Functions (with standalone fallback)
 # ============================================================================
 
 
 def check_api_health() -> tuple[bool, Optional[dict]]:
-    """Check if the API is available and healthy."""
+    """Check if the API/model is available and healthy."""
+    if MODE == "standalone":
+        vectorizer, classifier, metadata = load_tfidf_model()
+        if vectorizer is not None and classifier is not None:
+            return True, {"status": "healthy", "mode": "standalone"}
+        return False, None
+
+    # API mode
     try:
         response = requests.get(f"{API_URL}/", timeout=5)
         if response.status_code == 200:
@@ -277,7 +402,11 @@ def check_api_health() -> tuple[bool, Optional[dict]]:
 
 
 def get_model_info() -> Optional[dict]:
-    """Get model information from the API."""
+    """Get model information from the API or local model."""
+    if MODE == "standalone":
+        return get_standalone_model_info()
+
+    # API mode
     try:
         response = requests.get(f"{API_URL}/model/info", timeout=5)
         if response.status_code == 200:
@@ -288,7 +417,11 @@ def get_model_info() -> Optional[dict]:
 
 
 def classify_text(text: str, threshold: float) -> Optional[dict]:
-    """Send text to API for classification."""
+    """Classify text using API or local model."""
+    if MODE == "standalone":
+        return predict_standalone(text, threshold)
+
+    # API mode
     try:
         response = requests.post(
             f"{API_URL}/predict",
@@ -381,10 +514,17 @@ def render_sidebar() -> None:
         api_healthy, _health_info = check_api_health()
 
         if api_healthy:
-            st.markdown(
-                '<p><span class="status-online"></span> API Online</p>',
-                unsafe_allow_html=True,
-            )
+            # Show different status for standalone vs API mode
+            if MODE == "standalone":
+                st.markdown(
+                    '<p><span class="status-online"></span> Model Loaded (Standalone)</p>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<p><span class="status-online"></span> API Online</p>',
+                    unsafe_allow_html=True,
+                )
 
             model_info = get_model_info()
 
@@ -478,11 +618,15 @@ def render_sidebar() -> None:
                 st.warning("Could not load model info")
         else:
             st.markdown(
-                '<p><span class="status-offline"></span> API Offline</p>',
+                '<p><span class="status-offline"></span> Model Unavailable</p>',
                 unsafe_allow_html=True,
             )
-            st.error("Cannot connect to API. Make sure the server is running.")
-            st.code("uvicorn src.predict.predict:app --reload", language="bash")
+            if MODE == "standalone":
+                st.error("TF-IDF model not found. Train the model first.")
+                st.code("uv run python -m src.train.train --model tfidf", language="bash")
+            else:
+                st.error("Cannot connect to API. Make sure the server is running.")
+                st.code("uvicorn src.predict.predict:app --reload", language="bash")
 
         st.markdown("---")
         st.markdown("### About")

@@ -395,11 +395,48 @@ def train_neural_model(
 
     # Load model
     print(f"Loading model from {model_name}...")
-    # For DeBERTa-v3, suppress warnings about gamma/beta weight names
-    # (this is expected behavior, transformers handles the remapping)
-    import warnings
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*gamma.*beta.*")
+
+    # DeBERTa-v3 has gamma/beta naming for LayerNorm instead of weight/bias
+    # We need to handle this explicitly
+    if "deberta-v3" in model_name.lower():
+        from transformers import DebertaV2ForSequenceClassification, DebertaV2Config
+        import warnings
+
+        # Load config and create model
+        config = DebertaV2Config.from_pretrained(
+            model_name,
+            num_labels=NUM_LABELS,
+            problem_type="multi_label_classification",
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
+
+        # Load state dict and remap gamma/beta -> weight/bias
+        from huggingface_hub import hf_hub_download
+        import safetensors.torch
+
+        # Download the model weights
+        weights_file = hf_hub_download(repo_id=model_name, filename="model.safetensors")
+        state_dict = safetensors.torch.load_file(weights_file)
+
+        # Remap LayerNorm parameter names
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key
+            if ".gamma" in key:
+                new_key = key.replace(".gamma", ".weight")
+            elif ".beta" in key:
+                new_key = key.replace(".beta", ".bias")
+            new_state_dict[new_key] = value
+
+        # Create model and load remapped weights
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            model = DebertaV2ForSequenceClassification(config)
+            # Load only the base model weights (classifier is randomly initialized)
+            missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+            print(f"  Loaded weights with {len(missing)} missing keys (classifier layer)")
+    else:
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name,
             num_labels=NUM_LABELS,
