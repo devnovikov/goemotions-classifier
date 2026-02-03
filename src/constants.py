@@ -57,15 +57,15 @@ MODEL_CONFIGS = {
         "epochs": 3,
     },
     "deberta": {
-        "name": "DeBERTa-v3-large",
-        "model_name": "microsoft/deberta-v3-large",
+        "name": "DeBERTa-v3-base",
+        "model_name": "microsoft/deberta-v3-base",
         "max_length": 256,
-        "batch_size": 8,
-        "gradient_accumulation_steps": 2,  # effective batch size = 16
-        "learning_rate": 1e-4,  # increased to 1e-4 - model wasn't learning with 5e-5
+        "batch_size": 16,  # can use larger batch with smaller model
+        "gradient_accumulation_steps": 1,
+        "learning_rate": 2e-5,  # standard for base models
         "epochs": 5,
-        "warmup_ratio": 0.1,  # increased warmup for higher lr
-        "lr_scheduler_type": "cosine",  # smoother decay than linear
+        "warmup_ratio": 0.06,
+        "lr_scheduler_type": "cosine",
     },
 }
 
