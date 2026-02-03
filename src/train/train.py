@@ -555,20 +555,60 @@ def train_neural_model(
         gradient_checkpointing=False,  # Disabled - was preventing learning
     )
 
-    # Custom trainer with weighted loss
-    class WeightedTrainer(Trainer):
-        def __init__(self, class_weights_tensor, *args, **kwargs):
+    # Custom trainer with differential learning rate and optional weighted loss
+    class DifferentialLRTrainer(Trainer):
+        def __init__(self, class_weights_tensor=None, classifier_lr=1e-3, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.class_weights_tensor = class_weights_tensor
+            self.classifier_lr = classifier_lr
+
+        def create_optimizer(self):
+            """Create optimizer with different learning rates for encoder and classifier."""
+            from torch.optim import AdamW
+
+            model = self.model
+            base_lr = self.args.learning_rate
+            classifier_lr = self.classifier_lr
+
+            # Separate parameters: classifier vs encoder
+            classifier_params = []
+            encoder_params = []
+
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if 'classifier' in name or 'pooler' in name:
+                    classifier_params.append(param)
+                else:
+                    encoder_params.append(param)
+
+            optimizer_grouped_parameters = [
+                {"params": encoder_params, "lr": base_lr},
+                {"params": classifier_params, "lr": classifier_lr},
+            ]
+
+            self.optimizer = AdamW(
+                optimizer_grouped_parameters,
+                betas=(0.9, 0.999),
+                eps=1e-8,
+                weight_decay=self.args.weight_decay,
+            )
+
+            print(f"  Differential LR: encoder={base_lr}, classifier={classifier_lr}")
+            return self.optimizer
 
         def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-            """Compute a class-balanced multi-label loss using BCEWithLogitsLoss."""
+            """Compute loss, optionally with class weights."""
             labels = inputs.pop("labels")
             outputs = model(**inputs)
             logits = outputs.logits
-            # Move class weights to same device as logits
-            weights = self.class_weights_tensor.to(logits.device)
-            loss_fct = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
+
+            if self.class_weights_tensor is not None:
+                weights = self.class_weights_tensor.to(logits.device)
+                loss_fct = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
+            else:
+                loss_fct = torch.nn.BCEWithLogitsLoss()
+
             loss = loss_fct(logits, labels)
             return (loss, outputs) if return_outputs else loss
 
@@ -582,24 +622,17 @@ def train_neural_model(
             "hamming_loss": hamming_loss(labels, preds),
         }
 
-    # Initialize trainer - use weighted or standard based on flag
-    if use_class_weights and class_weights_tensor is not None:
-        trainer = WeightedTrainer(
-            class_weights_tensor=class_weights_tensor,
-            model=model,
-            args=training_args,
-            train_dataset=train_ds,
-            eval_dataset=val_ds,
-            compute_metrics=compute_metrics,
-        )
-    else:
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_ds,
-            eval_dataset=val_ds,
-            compute_metrics=compute_metrics,
-        )
+    # Initialize trainer with differential learning rate
+    # Classifier gets higher lr (1e-3) than encoder (from config)
+    trainer = DifferentialLRTrainer(
+        class_weights_tensor=class_weights_tensor if use_class_weights else None,
+        classifier_lr=1e-3,  # 50x higher than encoder lr
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        compute_metrics=compute_metrics,
+    )
 
     # Train
     print("\nStarting training...")
